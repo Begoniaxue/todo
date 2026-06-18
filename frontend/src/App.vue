@@ -51,7 +51,7 @@
         <div class="controls">
           <button 
             class="btn btn-primary" 
-            @click="toggleTimer"
+            @click="handleStart"
             :disabled="!selectedTaskId"
           >
             {{ isRunning && !isPaused ? '⏸ 暂停' : (isPaused ? '▶ 继续' : '▶ 开始') }}
@@ -120,59 +120,31 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { usePomodoroTimer, TOTAL_TIME, CIRCUMFERENCE, RADIUS } from './composables/usePomodoroTimer.js'
+import * as api from './services/api.js'
 
-const TOTAL_TIME = 25 * 60
-const radius = 120
-const circumference = 2 * Math.PI * radius
+const {
+  timeLeft,
+  isRunning,
+  isPaused,
+  formattedTime,
+  dashOffset,
+  toggleTimer,
+  resetTimer,
+  init: initTimer,
+  cleanup: cleanupTimer
+} = usePomodoroTimer({
+  onComplete: handlePomodoroComplete
+})
+
+const radius = RADIUS
+const circumference = CIRCUMFERENCE
 
 const tasks = ref([])
 const selectedTaskId = ref('')
 const newTaskName = ref('')
-const timeLeft = ref(TOTAL_TIME)
-const isRunning = ref(false)
-const isPaused = ref(false)
 const showModal = ref(false)
 const completedTaskName = ref('')
-
-let timer = null
-let segmentStartTs = 0
-let accumulatedSeconds = 0
-
-const calcTimeLeft = () => {
-  if (!isRunning.value || isPaused.value) {
-    return TOTAL_TIME - accumulatedSeconds
-  }
-  const elapsedInSegment = Math.floor((Date.now() - segmentStartTs) / 1000)
-  const totalElapsed = accumulatedSeconds + elapsedInSegment
-  return Math.max(0, TOTAL_TIME - totalElapsed)
-}
-
-const syncTimeLeft = () => {
-  const remaining = calcTimeLeft()
-  if (remaining !== timeLeft.value) {
-    timeLeft.value = remaining
-  }
-  if (remaining <= 0 && isRunning.value && !isPaused.value) {
-    completePomodoro()
-  }
-}
-
-const handleVisibility = () => {
-  if (document.visibilityState === 'visible' && isRunning.value) {
-    syncTimeLeft()
-  }
-}
-
-const formattedTime = computed(() => {
-  const mins = Math.floor(timeLeft.value / 60)
-  const secs = timeLeft.value % 60
-  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
-})
-
-const dashOffset = computed(() => {
-  const progress = (TOTAL_TIME - timeLeft.value) / TOTAL_TIME
-  return circumference * (1 - progress)
-})
 
 const currentTaskName = computed(() => {
   if (!selectedTaskId.value) return ''
@@ -180,10 +152,9 @@ const currentTaskName = computed(() => {
   return task ? task.name : ''
 })
 
-const fetchTasks = async () => {
+const loadTasks = async () => {
   try {
-    const res = await fetch('/api/tasks')
-    tasks.value = await res.json()
+    tasks.value = await api.fetchTasks()
   } catch (e) {
     console.error('获取任务失败:', e)
   }
@@ -192,15 +163,9 @@ const fetchTasks = async () => {
 const addTask = async () => {
   if (!newTaskName.value.trim()) return
   try {
-    const res = await fetch('/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newTaskName.value.trim() })
-    })
-    if (res.ok) {
-      newTaskName.value = ''
-      await fetchTasks()
-    }
+    await api.createTask(newTaskName.value.trim())
+    newTaskName.value = ''
+    await loadTasks()
   } catch (e) {
     console.error('添加任务失败:', e)
   }
@@ -209,84 +174,46 @@ const addTask = async () => {
 const deleteTask = async (id) => {
   if (!confirm('确定要删除这个任务吗？')) return
   try {
-    await fetch(`/api/tasks/${id}`, { method: 'DELETE' })
+    await api.deleteTask(id)
     if (selectedTaskId.value === String(id)) {
       selectedTaskId.value = ''
     }
-    await fetchTasks()
+    await loadTasks()
   } catch (e) {
     console.error('删除任务失败:', e)
   }
 }
 
-const toggleTimer = () => {
+const handleStart = () => {
   if (!selectedTaskId.value) return
-  if (isRunning.value && !isPaused.value) {
-    const elapsedInSegment = Math.floor((Date.now() - segmentStartTs) / 1000)
-    accumulatedSeconds += elapsedInSegment
-    isPaused.value = true
-    clearInterval(timer)
-    timer = null
-    syncTimeLeft()
-  } else {
-    isRunning.value = true
-    isPaused.value = false
-    segmentStartTs = Date.now()
-    syncTimeLeft()
-    timer = setInterval(syncTimeLeft, 250)
-  }
+  toggleTimer()
 }
 
-const resetTimer = () => {
-  clearInterval(timer)
-  timer = null
-  isRunning.value = false
-  isPaused.value = false
-  accumulatedSeconds = 0
-  segmentStartTs = 0
-  timeLeft.value = TOTAL_TIME
-}
-
-const completePomodoro = async () => {
-  clearInterval(timer)
-  timer = null
-  isRunning.value = false
-  isPaused.value = false
-  accumulatedSeconds = 0
-  segmentStartTs = 0
-
+async function handlePomodoroComplete() {
   const taskId = Number(selectedTaskId.value)
   const task = tasks.value.find(t => t.id === taskId)
   completedTaskName.value = task ? task.name : ''
 
   try {
-    await fetch('/api/pomodoro/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: taskId })
-    })
-    await fetchTasks()
+    await api.completePomodoro(taskId)
+    await loadTasks()
   } catch (e) {
     console.error('记录番茄钟失败:', e)
   }
 
   showModal.value = true
-  timeLeft.value = TOTAL_TIME
 }
 
 const closeModal = () => {
   showModal.value = false
 }
 
-
-
 onMounted(() => {
-  fetchTasks()
-  document.addEventListener('visibilitychange', handleVisibility)
+  loadTasks()
+  initTimer()
 })
 
 onUnmounted(() => {
-  clearInterval(timer)
-  document.removeEventListener('visibilitychange', handleVisibility)
+  cleanupTimer()
 })
 </script>
