@@ -119,7 +119,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const TOTAL_TIME = 25 * 60
 const radius = 120
@@ -133,7 +133,35 @@ const isRunning = ref(false)
 const isPaused = ref(false)
 const showModal = ref(false)
 const completedTaskName = ref('')
+
 let timer = null
+let segmentStartTs = 0
+let accumulatedSeconds = 0
+
+const calcTimeLeft = () => {
+  if (!isRunning.value || isPaused.value) {
+    return TOTAL_TIME - accumulatedSeconds
+  }
+  const elapsedInSegment = Math.floor((Date.now() - segmentStartTs) / 1000)
+  const totalElapsed = accumulatedSeconds + elapsedInSegment
+  return Math.max(0, TOTAL_TIME - totalElapsed)
+}
+
+const syncTimeLeft = () => {
+  const remaining = calcTimeLeft()
+  if (remaining !== timeLeft.value) {
+    timeLeft.value = remaining
+  }
+  if (remaining <= 0 && isRunning.value && !isPaused.value) {
+    completePomodoro()
+  }
+}
+
+const handleVisibility = () => {
+  if (document.visibilityState === 'visible' && isRunning.value) {
+    syncTimeLeft()
+  }
+}
 
 const formattedTime = computed(() => {
   const mins = Math.floor(timeLeft.value / 60)
@@ -194,33 +222,38 @@ const deleteTask = async (id) => {
 const toggleTimer = () => {
   if (!selectedTaskId.value) return
   if (isRunning.value && !isPaused.value) {
+    const elapsedInSegment = Math.floor((Date.now() - segmentStartTs) / 1000)
+    accumulatedSeconds += elapsedInSegment
     isPaused.value = true
     clearInterval(timer)
     timer = null
+    syncTimeLeft()
   } else {
     isRunning.value = true
     isPaused.value = false
-    timer = setInterval(() => {
-      if (timeLeft.value > 0) {
-        timeLeft.value--
-      } else {
-        completePomodoro()
-      }
-    }, 1000)
+    segmentStartTs = Date.now()
+    syncTimeLeft()
+    timer = setInterval(syncTimeLeft, 250)
   }
 }
 
 const resetTimer = () => {
   clearInterval(timer)
+  timer = null
   isRunning.value = false
   isPaused.value = false
+  accumulatedSeconds = 0
+  segmentStartTs = 0
   timeLeft.value = TOTAL_TIME
 }
 
 const completePomodoro = async () => {
   clearInterval(timer)
+  timer = null
   isRunning.value = false
   isPaused.value = false
+  accumulatedSeconds = 0
+  segmentStartTs = 0
 
   const taskId = Number(selectedTaskId.value)
   const task = tasks.value.find(t => t.id === taskId)
@@ -249,9 +282,11 @@ const closeModal = () => {
 
 onMounted(() => {
   fetchTasks()
+  document.addEventListener('visibilitychange', handleVisibility)
 })
 
 onUnmounted(() => {
   clearInterval(timer)
+  document.removeEventListener('visibilitychange', handleVisibility)
 })
 </script>
